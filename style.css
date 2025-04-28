@@ -196,6 +196,7 @@ body {
   gap: 1rem;
   z-index: 1002;
 }
+
 #editControls {
   top: 20px;
   right: 20px;
@@ -236,6 +237,8 @@ body {
   flex-direction: column;
   gap: 10px;
 }
+
+
 
 #editControls button {
   background-color: #0046CA;
@@ -374,12 +377,10 @@ body {
 
 /* Botões */
 .action-button {
-  padding: 10px 15px;
-  font-size: 1rem;
-  border-radius: 8px;
+  color: white;
+  display: flex;
   border: none;
   cursor: pointer;
-  flex: 1;
   transition: background-color 0.3s ease;
 }
 
