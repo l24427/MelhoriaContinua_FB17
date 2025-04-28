@@ -46,13 +46,14 @@ async function loadItems() {
     const snapshot = await db.collection('fb17').get();
     stateVersion.value++;
     
-    currentItems = snapshot.docs.map(doc => {
+    currentItems = snapshot.docs.map((doc, index) => {
       const data = doc.data();
       return {
         id: doc.id,
         name: doc.id,
         link: data.link || '#',
         category: (data.category || 'GERAL').toUpperCase(),
+        order: data.order || index,
         version: stateVersion.value
       };
     });
@@ -80,27 +81,34 @@ async function addNewItem() {
       return;
     }
 
-    // Verificar se item já existe
     const doc = await db.collection('fb17').doc(name).get();
-    if (doc.exists) {
-      throw new Error('Item já existe');
-    }
+    if (doc.exists) throw new Error('Item já existe');
 
-    // Atualização otimista
+    // Determinar nova ordem
+    const lastOrder = Math.max(...currentItems
+      .filter(i => i.category === category)
+      .map(i => i.order), -1);
+
     stateVersion.value++;
-    currentItems.push({
+    const newItem = {
       id: name,
       name,
       link,
       category,
+      order: lastOrder + 1,
       version: stateVersion.value
-    });
+    };
+    
+    currentItems.push(newItem);
     renderItems(stateVersion.value);
 
-    await db.collection('fb17').doc(name).set({ link, category });
+    await db.collection('fb17').doc(name).set({ 
+      link, 
+      category,
+      order: lastOrder + 1
+    });
     
-    elements.addForm.style.display = 'none';
-    elements.newName.value = elements.newLink.value = elements.newCategory.value = '';
+    closeNewItem();
     
   } catch (error) {
     showError('Erro ao adicionar item', error);
@@ -110,7 +118,6 @@ async function addNewItem() {
   }
 }
 
-
 // ================= RENDERIZAÇÃO =================
 function renderItems(requestedVersion) {
   if (requestedVersion !== stateVersion.value) return;
@@ -118,8 +125,7 @@ function renderItems(requestedVersion) {
   const mainSection = document.querySelector('.main-section');
   mainSection.innerHTML = '';
 
-  const categoryOrder = ['EHS','QUALIDADE','PRODUTIVIDADE','PESSOAS','CUSTOS'];
-
+  const categoryOrder = ['EHS', 'QUALIDADE', 'PRODUTIVIDADE', 'PESSOAS', 'CUSTOS'];
   const categories = currentItems.reduce((acc, item) => {
     const cat = item.category;
     if (!acc[cat]) acc[cat] = [];
@@ -127,25 +133,33 @@ function renderItems(requestedVersion) {
     return acc;
   }, {});
 
-  categoryOrder.forEach(category =>{
-    if (categories[category]){
+  // Renderizar categorias ordenadas
+  categoryOrder.forEach(category => {
+    if (categories[category]) {
       const column = createColumn(category);
-      categories[category].forEach(item=>column.appendChild(createItemElement(item)));
+      categories[category]
+        .sort((a, b) => a.order - b.order)
+        .forEach(item => column.appendChild(createItemElement(item)));
+      mainSection.appendChild(column);
+    }
+  });
+
+  // Outras categorias
+  Object.keys(categories).forEach(category => {
+    if (!categoryOrder.includes(category)) {
+      const column = createColumn(category);
+      categories[category]
+        .sort((a, b) => a.order - b.order)
+        .forEach(item => column.appendChild(createItemElement(item)));
       mainSection.appendChild(column);
     }
   });
 }
 
-
 function createColumn(category) {
   const column = document.createElement('div');
   column.className = 'column';
-  
-  const header = document.createElement('a');
-  header.className = 'category';
-  header.textContent = category;
-  column.appendChild(header);
-  
+  column.innerHTML = `<a class="category">${category}</a>`;
   return column;
 }
 
@@ -170,27 +184,49 @@ function createItemElement(item) {
     const controls = document.createElement('div');
     controls.className = 'edit-controls';
     controls.style.cssText = `
-      position: absolute;
-      top: 5px;
-      right: 5px;
+      position: flex;
       display: flex;
-      gap: 5px;
+      gap: 8px;
       z-index: 100;
+      padding: 6px;
+      border-radius: 25px;
     `;
 
+    // Botões de Edição/Exclusão
     controls.appendChild(
       createControlButton('✎', '#28a745', () => showEditModal(item))
     );
     controls.appendChild(
       createControlButton('✖', '#dc3545', () => handleDelete(item))
     );
+
+    // Divisor visual
+    const divider = document.createElement('div');
+    divider.style.cssText = `
+      width: 1px;
+      background: #ddd;
+      margin: 0 4px;
+    `;
+    controls.appendChild(divider);
+
+    // Botões de Movimento
+    const moveGroup = document.createElement('div');
+    moveGroup.style.display = 'flex';
+    moveGroup.style.gap = '4px';
+    moveGroup.appendChild(
+      createControlButton('↑', '#ffc107', () => moveItem(item, 'up'))
+    );
+    moveGroup.appendChild(
+      createControlButton('↓', '#ffc107', () => moveItem(item, 'down'))
+    );
+    
+    controls.appendChild(moveGroup);
     
     container.appendChild(controls);
   }
 
   return container;
 }
-
 // ================= OPERAÇÕES CRUD =================
 async function handleDelete(item) {
   if (isActionInProgress || !confirm(`Excluir "${item.name}"?`)) return;
@@ -198,7 +234,6 @@ async function handleDelete(item) {
   try {
     toggleUIState(true);
     
-    // Atualização otimista
     stateVersion.value++;
     currentItems = currentItems.filter(i => i.name !== item.name);
     renderItems(stateVersion.value);
@@ -207,6 +242,47 @@ async function handleDelete(item) {
     
   } catch (error) {
     showError('Erro ao excluir item', error);
+    await loadItems();
+  } finally {
+    toggleUIState(false);
+  }
+}
+
+async function moveItem(item, direction) {
+  if (isActionInProgress) return;
+
+  try {
+    toggleUIState(true);
+    
+    const categoryItems = currentItems
+      .filter(i => i.category === item.category)
+      .sort((a, b) => a.order - b.order);
+
+    const currentIndex = categoryItems.findIndex(i => i.id === item.id);
+    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+
+    if (newIndex >= 0 && newIndex < categoryItems.length) {
+      // Trocar ordens
+      [categoryItems[currentIndex].order, categoryItems[newIndex].order] = 
+      [categoryItems[newIndex].order, categoryItems[currentIndex].order];
+
+      // Atualizar Firestore
+      const batch = db.batch();
+      batch.update(db.collection('fb17').doc(categoryItems[currentIndex].id), {
+        order: categoryItems[currentIndex].order
+      });
+      batch.update(db.collection('fb17').doc(categoryItems[newIndex].id), {
+        order: categoryItems[newIndex].order
+      });
+      await batch.commit();
+
+      // Atualizar estado local
+      stateVersion.value++;
+      renderItems(stateVersion.value);
+    }
+    
+  } catch (error) {
+    showError('Erro ao mover item', error);
     await loadItems();
   } finally {
     toggleUIState(false);
@@ -337,7 +413,6 @@ function createControlButton(text, color, action) {
   btn.innerHTML = text;
   btn.style.cssText = `
     background: ${color};
-    color: white;
     border-radius: 50%;
     width: 25px;
     height: 25px;
